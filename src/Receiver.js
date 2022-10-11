@@ -3,7 +3,7 @@ import EventEmitter from "events";
 import { log, errlog } from './utils.js';
 import Discovery from "./discovery.js";
 import Transmitter from "./transmitter.js";
-import isIP from 'is-ip'
+import {isIP} from 'is-ip'
 import { io } from "socket.io-client";
 import UserEndpoint from './UserEndpoint.js'
 import sha1 from 'sha1'
@@ -150,7 +150,6 @@ class Receiver extends Server{
             this.activeUsers = this.activeUsers.filter((user) => {
                 if(user.socketID === socket.id){
                     userWhoDisconnected = user
-                    console.log('He went away', userWhoDisconnected)
                 }
                 user.socketID !== socket.id
             });
