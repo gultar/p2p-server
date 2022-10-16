@@ -5,7 +5,7 @@ import Discovery from "./discovery.js";
 import Transmitter from "./transmitter.js";
 import {isIP} from 'is-ip'
 import { io } from "socket.io-client";
-import UserEndpoint from './UserEndpoint.js'
+// import UserEndpoint from './UserEndpoint.js'
 import sha1 from 'sha1'
 
 class Receiver extends Server{
@@ -18,6 +18,7 @@ class Receiver extends Server{
         this.peersConnected = {}
         this.userSockets = {}
         this.activeUsers = []
+        this.usersOnline = {}
         const discoveryPort = parseInt(this.port) - 1
         this.discovery = new Discovery({
             host:host,
@@ -33,11 +34,11 @@ class Receiver extends Server{
             announcer:this.discovery.announcer,
             networkMessages: this.networkMessages
         })
-        this.endpoint = new UserEndpoint({
-            transmitter:this.transmitter,
-            address:this.address,
-            peersConnected:this.peersConnected
-        })
+        // this.endpoint = new UserEndpoint({
+        //     transmitter:this.transmitter,
+        //     address:this.address,
+        //     peersConnected:this.peersConnected
+        // })
         
     }
 
@@ -110,8 +111,6 @@ class Receiver extends Server{
 
 
         });
-
-        // this.announce()
     }
 
     newUser(socket){
@@ -121,55 +120,65 @@ class Receiver extends Server{
             message.isUserMessage = true;
             for(let id of userSocketIDs){
                 const user = this.userSockets[id]
-                // console.log('Sending')
-                // console.log(message)
                 user.emit('messageResponse', message)
             }
             console.log(`${this.address} sending ${message.text}`)
             this.transmitter.broadcast(message)
             
         })
-        socket.on('newUser', (data) => {
+        socket.on('newUser', (user) => {
             //Adds the new user to the list of users
-            this.activeUsers.push(data);
-            
+            this.usersOnline[user.userName] = user
+
             //Sends the list of users to the client
-            this.emit('newUserResponse', this.activeUsers);
-            // const message = { activeUsers:this.activeUsers, isNewUser:true }
-            const message = { ...data, isNewUser:true }
-            console.log('New User', message)
+            const message = { ...user, isNewUser:true }
+            //Announce new user over network
             this.transmitter.broadcast(message)
+            //Push new list of active users on network to user endpoint who're connected to this node
+            this.broadcastToUsers('usersOnline', this.usersOnline)
         });
-        socket.on('disconnect', () => {
+        socket.on('disconnect', (disc, other) => {
             //Updates the list of users when a user disconnects from the server
             let userWhoDisconnected = {
                 userName:'',
                 socketID:''
             }
-
-            this.activeUsers = this.activeUsers.filter((user) => {
+            
+            //Try to find user who has disconnected through this socket's id
+            for(let userName of Object.keys(this.usersOnline)){
+                let user = this.usersOnline[userName]
+                console.log('User', user)
                 if(user.socketID === socket.id){
-                    userWhoDisconnected = user
+                    userWhoDisconnected = { 
+                        userName:user.userName, 
+                        socketID:user.socketID,
+                        userDisconnected:true
+                    }
+                    console.log('FOUND IT', userWhoDisconnected)
                 }
-                user.socketID !== socket.id
-            });
+            }
+            
             console.log('🔥: A user disconnected');
-            this.emit('newUserResponse', this.activeUsers);
-            userWhoDisconnected.userDisconnected = true;
+            delete this.usersOnline[userWhoDisconnected.userName]
+            //Push new list of active users on network to user endpoint who're connected to this node
+            this.broadcastToUsers('usersOnline', this.usersOnline)
+            //Announce user disconnection over network
             this.transmitter.broadcast(userWhoDisconnected)
         });
+
         socket.on("connect_error", (err) => {
             console.log(`connect_error due to ${err.message}`);
         });
-
-        socket.emit('activeUsersRequest')
     }
 
     handleNewConnection(socket, address){
+        //If peer node isn't already connected, add its connection
         if(!this.peersConnected[address]){
             this.peersConnected[address] = socket;
+            //Store peerAddress for eventual use elsewhere
             socket.peerAddress = address;
             log(`|Server| Peer ${address} connected`)
+            //Reciprocicate, by connecting to the node also
             this.transmitter.connect({ address:address })
             socket.on('message', message => this.receiveMessage(message))
         }
@@ -177,10 +186,14 @@ class Receiver extends Server{
 
     handleNetworkMessage(message){
         const messageID = message.messageID
+        //if not already known, check message
         if(!this.networkMessages[messageID]){
-            const result = this.transmitter.relay(message)
+            //Relays a new message to immediate peers
+            //who will, in turn, relay it to other peers, and so on
+            this.transmitter.relay(message)
+            //save it to memory to avoid infinite loop
             this.networkMessages[messageID] = message
-
+            //Decide what action to take according to message type
             this.handleNetworkMessageType(message)
         }else{
             //message already known
@@ -188,39 +201,51 @@ class Receiver extends Server{
     }
 
     handleNetworkMessageType(message){
-        console.log('Relayed message', message)
         if(message.data.isUserMessage){
+            //Is a general message, usually text
+            //Data is an object in most cases
+            
             const userMessage = message.data
             this.broadcastToUsers('messageResponse', userMessage, userMessage.socketID)
         }
         else if(message.data.isNewUser){
-            console.log('Receives new users')
-            this.activeUsers.push({ userName:message.data.userName, socketID:message.data.socketID })
-            this.broadcastToUsers('newUserResponse', this.activeUsers);
+            console.log('Receives new users', message.data)
+            const user = message.data
+            
+            //Store new user info in UserOnline object for easy access
+            //The userOnline object stores all users currently connected
+            //on network, not just those who are connected to this node
+            this.usersOnline[user.userName] = {
+                userName:user.userName,
+                socketID:user.socketID
+            }
+
+            //Push the new state to connected users
+            this.broadcastToUsers('usersOnline', this.usersOnline)
         }
         else if(message.data.userDisconnected){
-            
-            // // console.log('Remote user disconnected')
-            // const disconnectedUser = message.data
-            // const currentUsers = this.activeUsers.filter((user)=>{
-            //     console.log('User',user)
-            //     console.log('Disco', disconnectedUser)
-            //     return user.socketID !== disconnectedUser.socketID
-            // })
-
-            // if(currentUsers.length > 0){
-            //     this.activeUsers = currentUsers
-            // }
-
+            //retrieve user details from message data
+            const disconnectedUser = message.data
+            //remove user from active users
+            this.usersOnline[disconnectedUser.userName] = {}
+            delete this.usersOnline[disconnectedUser.userName]
+            //Push the new state to connected users
+            this.broadcastToUsers('usersOnline', this.usersOnline)
 
         }
     }
 
     sendNetworkMessage(data, config){
+        //Create a unique ID for every message
         const messageID = sha1(Math.random())
+        //If message hasn't already been received, check it
         if(!this.networkMessages[messageID]){
+            //Message is composed of data and configuration parameters
             const message = { ...data, ...config }
+            //Send it to all immediate peer nodes, 
+            //who will in turn relay it to other remote peer
             this.transmitter.broadcast(message)
+            //Store message to avoid infinite feedback
             this.networkMessages[messageID] = message;
         }
         return 'Okay'
@@ -236,8 +261,6 @@ class Receiver extends Server{
         for(const id of Object.keys(this.userSockets)){
             if(from !== id){
                 const userSocket = this.userSockets[id]
-                console.log(`${this.address} showing ${message.text}`)
-                console.log(`${this.address} connection is alive ${userSocket.connected}`)
                 userSocket.emit(type, message)
             }else{
                 //'Will not send back message to origin user'

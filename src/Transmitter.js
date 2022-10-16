@@ -1,7 +1,7 @@
 import ioClient from 'socket.io-client';
 import { argv } from "process";
 import EventEmitter from 'events';
-import PeerRegistry from './peerRegistry.js';
+import PeerRegistry from './deprecated/PeerRegistry.js';
 import { log, errlog, isEmpty } from './utils.js';
 import IP from 'ip'
 import sha1 from 'sha1'
